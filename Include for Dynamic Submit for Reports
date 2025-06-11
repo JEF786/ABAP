@@ -1,0 +1,161 @@
+*&---------------------------------------------------------------------*
+*& Include ZDYNAMIC_SUBMIT
+*&---------------------------------------------------------------------*
+* Created By: James Fernandes
+* Title: Include Class to Submit a program Dynamically
+* Version: 01.
+* Creation Date: 11.06.2025
+
+
+CLASS lcl_submit DEFINITION.
+  PUBLIC SECTION.
+    METHODS :   submit_report
+                    IMPORTING im_report_name TYPE text40
+                              im_screen_para TYPE ty_standard_sel
+                    CHANGING  ex_table_data  TYPE STANDARD TABLE.
+ENDCLASS.
+
+CLASS lcl_submit IMPLEMENTATION.
+  METHOD submit_report.
+
+   TYPES: BEGIN OF ty_col_fields,
+            col_name TYPE char30,
+          END OF ty_col_fields.
+
+    DATA: lt_deep_fields  TYPE TABLE OF ty_col_fields,
+          lt_deep_store   TYPE TABLE OF ty_col_fields.
+
+    FIELD-SYMBOLS: <lt_outtab> TYPE ANY TABLE,
+                   <ls_wa> TYPE ANY.
+
+    DATA: lt_fcat_data TYPE lvc_t_fcat.
+    DATA: lt_fcat_store TYPE lvc_t_fcat.
+
+    DATA: lr_data   TYPE REF TO DATA.
+    DATA: dyn_data  TYPE REF TO DATA.
+
+    " LET KNOW THE MODEL
+    cl_salv_bs_runtime_info=>set(
+     EXPORTING
+       display  = abap_false
+       metadata = abap_false
+       data     = abap_true
+   ).
+
+    "fetching report data
+     SUBMIT (im_report_name) WITH SELECTION-TABLE im_screen_para
+                             AND RETURN.
+
+      TRY.
+      " GET DATA FROM SALV MODEL
+      cl_salv_bs_runtime_info=>get_data_ref(
+            IMPORTING
+              r_data = DATA(lo_data)
+      ).
+
+        "pass table data from object to internal table
+        ASSIGN lo_data->* TO <lt_outtab>.
+
+
+        "fetch fcat for <lt_outtab>/data internal table
+        TRY.
+        cl_salv_table=>factory(
+          IMPORTING
+            r_salv_table   = DATA(lr_alv)               " Basis Class Simple ALV Tables
+          CHANGING
+            t_table        = <lt_outtab>
+        ).
+        CATCH cx_root.
+        ENDTRY.
+
+        lt_fcat_data = cl_salv_controller_metadata=>get_lvc_fieldcatalog(
+                    r_columns      = lr_alv->get_columns( )                      " ALV Filter
+                    r_aggregations = lr_alv->get_aggregations( )                 " ALV Aggregations
+                  ).
+
+
+
+        "fetch fcat for im_tablE_struct/data_storing internal table
+        TRY.
+        cl_salv_table=>factory(
+          IMPORTING
+            r_salv_table   = DATA(lr_alv2)               " Basis Class Simple ALV Tables
+          CHANGING
+            t_table        = ex_table_data
+        ).
+        CATCH cx_root.
+        ENDTRY.
+        lt_fcat_store = cl_salv_controller_metadata=>get_lvc_fieldcatalog(
+                    r_columns      = lr_alv2->get_columns( )                      " ALV Filter
+                    r_aggregations = lr_alv2->get_aggregations( )                 " ALV Aggregations
+                  ).
+
+
+
+        "start of mapping logic
+
+        LOOP AT <lt_outtab> ASSIGNING <ls_wa>.    "loop at data table
+
+          "creating lineitem/work area for storing dynamic table
+          CREATE DATA lr_data LIKE LINE OF ex_table_data.
+          ASSIGN lr_data->* TO FIELD-SYMBOL(<fs_wa>).
+
+          "creating line item data reference for passing values
+          CREATE DATA dyn_data LIKE <ls_wa>.
+          dyn_data->* = <ls_wa> .
+
+          "fetching fieldnames for data table
+          LOOP AT lt_fcat_data ASSIGNING FIELD-SYMBOL(<fs_fcat>).
+            REFRESH: lt_deep_fields, lt_deep_store.
+
+            "checking if field is a deep structure, irrespective of which lt_deep_field table will be used to fill the fieldname in
+            IF <fs_fcat>-fieldname CA '-'.
+              SPLIT <fs_fcat>-fieldname AT '-' INTO TABLE lt_deep_fields.
+            ELSE.
+              APPEND VALUE ty_col_fields( col_name = <fs_fcat>-fieldname ) TO lt_deep_fields.
+            ENDIF.
+
+              "fetching table size and selecting last line item which indirectly will be the fieldname and passing it to field symbol to use futher in logic
+              DESCRIBE TABLE lt_deep_fields LINES DATA(deep_structure_length).
+              ASSIGN lt_deep_fields[ deep_structure_length ] TO FIELD-SYMBOL(<data_fieldname>).
+              IF sy-subrc IS INITIAL.
+
+                    "fetching fieldnames for storing table
+                    LOOP AT lt_fcat_store ASSIGNING FIELD-SYMBOL(<lfs_store_strct>).
+
+                      "checking if field is a deep structure, irrespective of which lt_deep_store table will be used to fill the fieldname in
+                      IF <lfs_store_strct>-fieldname CA '-'.
+                        SPLIT <lfs_store_strct>-fieldname AT '-' INTO TABLE lt_deep_store.
+                        DELETE lt_deep_store WHERE col_name NE <data_fieldname>.
+                      ELSE.
+                        IF <lfs_store_strct>-fieldname EQ <data_fieldname>.
+                          APPEND VALUE ty_col_fields( col_name = <lfs_store_strct>-fieldname ) TO lt_deep_store.
+                        ENDIF.
+                      ENDIF.
+
+                      "if fieldname from data table does not exist in the current deep structure, will go to next loop iteration else will pass data to reference variable
+                        IF lt_deep_store IS NOT INITIAL.
+                          lr_data->(<lfs_store_strct>-fieldname) = dyn_data->(<fs_fcat>-fieldname).
+                          EXIT.
+                        ENDIF.
+                    ENDLOOP.
+              ENDIF.
+          ENDLOOP.
+
+          "passing work area to internal table
+          APPEND <fs_wa> TO ex_table_data.
+        ENDLOOP.
+
+      CATCH cx_salv_bs_sc_runtime_info.
+      ENDTRY.
+
+    " RESET THE MODEL
+    cl_salv_bs_runtime_info=>set(
+     EXPORTING
+       display  = abap_true
+       metadata = abap_false
+       data     = abap_false
+   ).
+
+  ENDMETHOD.
+ENDCLASS.
