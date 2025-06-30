@@ -1,5 +1,16 @@
 ""xls to xlsx
 
+
+"            CALL METHOD zfsborcl_xlsx=>zxlsx_download_popup
+"              EXPORTING
+"               def_ext   = 'xlsx'
+"                def_name  = text
+"                gt_fcat_data = gt_fcat_lvc
+"              CHANGING
+"                gt_format = gt_data_mm1.  "Internal table with data to pass here
+
+
+
 *----------------------------------------------------------------------*
 CLASS zfsborcl_xlsx DEFINITION.
 
