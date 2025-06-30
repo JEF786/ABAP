@@ -1,0 +1,865 @@
+*Class Method
+
+
+CLASS lcl_xlsx DEFINITION .
+"-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  PUBLIC SECTION .
+
+    CONSTANTS : cs_name TYPE string VALUE 'Excel_sheet.XLS' .
+
+    TYPES : BEGIN OF ty_header          ,
+              fieldname TYPE char50,
+              value     TYPE text200,
+              col_color TYPE c LENGTH 4,
+              editmask  TYPE lvc_edtmsk,
+            END OF ty_header ,
+
+            tt_header TYPE TABLE OF ty_header WITH DEFAULT KEY,
+
+            BEGIN OF ty_layout ,
+              report     TYPE syst_repi2,
+              layout_var TYPE text, ""If initial default taken
+              default    TYPE flag, "If default variant displayed to be taken
+            END OF ty_layout,
+
+            BEGIN OF ty_stylmap ,
+               salv_color TYPE text30,
+               style_id   TYPE char30,
+            END OF ty_stylmap
+            .
+
+    DATA : BEGIN OF ty_cell_detail ,
+             fname_col            TYPE text40,  "Internal Table Column
+             color_col            TYPE text40 VALUE 'FNAME',  "inside color table column holding fieldname
+             struct_color_col     TYPE text40 VALUE 'COLOR',  "inside color table color Structure name
+             struct_color_col_col TYPE text40 VALUE 'COL'  ,   "Color Structure COL column name
+             struct_color_int_col TYPE text40 VALUE 'INT'  ,   "Color Structure INT column name
+             struct_color_inv_col TYPE text40 VALUE 'INV'  ,   "Color Structure INV column name
+           END OF ty_cell_detail,
+
+           BEGIN OF ty_cell_styl ,
+             fname_styl     TYPE text40,                    "Internal Table Column
+             styl_fieldname TYPE text40 VALUE 'FIELDNAME',  "inside color table column holding fieldname
+             style_style    TYPE text40 VALUE 'STYLE',      "inside color table color Structure name "For Bold , Italics , Underline
+*             style2         TYPE text40 VALUE 'STYLE2'  ,   "Color Structure COL column name
+*             style3         TYPE text40 VALUE 'STYLE3'  ,   "Color Structure COL column name
+*             style4         TYPE text40 VALUE 'STYLE4'  ,   "Color Structure COL column name
+           END OF ty_cell_styl,
+
+           lt_stylmap TYPE TABLE OF ty_stylmap .
+
+
+    METHODS : add_sheet         IMPORTING im_table      TYPE ANY TABLE                  "internal Table
+                                          im_sheetname  TYPE string
+                                          im_header     TYPE tt_header                  "Contains field names and desc
+                                          report_layout TYPE ty_layout OPTIONAL         "used to fetch columns to display and it's order
+*                                          header_flag   TYPE flag      OPTIONAL
+                                          row_color     TYPE text40    OPTIONAL
+                                          cell_color    LIKE ty_cell_detail OPTIONAL
+*                                          cell_color    TYPE string    OPTIONAL         "color column name in internal table(Note: only for type lvc_t_scol)
+                                          cell_styl     LIKE ty_cell_styl OPTIONAL,
+*                                          gt_fcat      TYPE lvc_t_fcat OPTIONAL,
+
+              convertbin        EXPORTING bin  TYPE solix_tab,
+
+              download_excel    IMPORTING file_name      TYPE string DEFAULT  'Sheet'
+                                          file_path      TYPE string OPTIONAL
+                                          filename_path  TYPE string OPTIONAL
+                                          filepath_popup TYPE flag DEFAULT abap_false
+                                          open_file      TYPE flag DEFAULT abap_false.
+
+"-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  PROTECTED SECTION.
+    DATA binary_content TYPE solix_tab.
+
+"-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  PRIVATE SECTION.
+
+    DATA :BEGIN OF ls_xls_cell,
+            styleid      TYPE string,
+            type         TYPE string,
+            cell_content TYPE string,
+*            currdec      TYPE string,
+          END OF ls_xls_cell,
+          li_xls_cells LIKE TABLE OF ls_xls_cell,
+
+          BEGIN OF ls_column_width,
+            col_index TYPE i,
+            col_width TYPE i,
+          END OF ls_column_width ,
+          li_column_width LIKE TABLE OF ls_column_width,
+
+          BEGIN OF ls_xls_row,
+            rownr    TYPE i,
+            rowhight TYPE i,
+            cells    LIKE li_xls_cells,
+          END OF ls_xls_row  ,
+          li_xls_row LIKE TABLE OF ls_xls_row,
+
+          lv_xml_string TYPE xstring,
+
+          BEGIN OF ls_documentproperties,
+            author TYPE string,
+          END OF ls_documentproperties,
+
+          BEGIN OF ls_font,
+            family    TYPE string VALUE 'Swiss',
+            fontname  TYPE string VALUE 'Arial',
+            font_size TYPE i VALUE 10,
+            color     TYPE string,
+            bold      TYPE char1,
+            italic    TYPE char1,
+            underline TYPE string,
+          END OF ls_font,
+
+          BEGIN OF ls_alignment ,
+            horizontal TYPE char10 , "VALUE 'Left',
+            vertical   TYPE char10 , "VALUE 'Bottom',
+            wraptext   TYPE char1,
+          END OF ls_alignment ,
+
+          BEGIN OF ls_border_face,
+            top    TYPE string,
+            bottom TYPE string,
+            left   TYPE string,
+            right  TYPE string,
+          END OF ls_border_face,
+
+          BEGIN OF ls_border,
+            linestyle LIKE ls_border_face,
+            weight    TYPE char1,
+            color     LIKE ls_border_face,
+          END OF ls_border,
+
+          BEGIN OF ls_interior,
+            colorindex        TYPE string,
+            pattern           TYPE string,
+            patterncolorindex TYPE string,
+          END OF ls_interior,
+
+          BEGIN OF ls_number,
+            number_type TYPE string,   " Units, Amount
+            number_fmt  TYPE string,   " Int,   Decimal
+          END OF ls_number,
+
+          BEGIN OF ls_style,
+            id        TYPE string,
+            font      LIKE ls_font,
+            alignment LIKE ls_alignment,
+            border    LIKE ls_border,
+            interior  LIKE ls_interior,
+            number    LIKE ls_number,               " Added to resolve data formatting issues on excel export
+          END OF ls_style,
+
+          BEGIN OF ls_excelmeta,
+            documentproperties LIKE ls_documentproperties,
+            styles             LIKE TABLE OF ls_style,
+          END OF ls_excelmeta ,
+
+          lv_text50 TYPE text50.
+
+    TYPES : BEGIN OF ty_style ,
+              id        TYPE string,
+              font      LIKE ls_font,
+              alignment LIKE ls_alignment,
+              border    LIKE ls_border,
+              interior  LIKE ls_interior,
+              number    LIKE ls_number,                 " Added to resolve data formatting issues on excel export
+            END OF ty_style ,
+
+            BEGIN OF row_color_code ,
+              rt_code TYPE text4,
+              rt_styl TYPE text10,
+            END OF row_color_code,
+
+            BEGIN OF ty_sheets ,
+               sheetname TYPE string,
+               sheetx    LIKE  li_xls_row,
+               colwidth  LIKE li_column_width,
+               colAutowidth LIKE li_column_width,
+             END OF ty_sheets ,
+             tt_sheet TYPE TABLE OF ty_sheets WITH DEFAULT KEY.
+
+    DATA : it_sheets TYPE tt_sheet .
+
+    ""Constants for style
+    CONSTANTS: alv_style_font_bold(4)          TYPE x VALUE '00000020',
+               alv_style_font_bold_no(4)       TYPE x VALUE '00000040',
+
+               alv_style_font_italic(4)        TYPE x VALUE '00000080',
+               alv_style_font_italic_no(4)     TYPE x VALUE '00000100',
+
+               alv_style_font_underlined(4)    TYPE x VALUE '00000200',
+               alv_style_font_underlined_no(4) TYPE x VALUE '00000400'.
+
+
+    METHODS : "CELLSTYL IMPORTING COL_COLOR TYPE TEXT40 CELL_COLOR TYPE TEXT40 RETURNING VALUE(LV_STYLE) TYPE STRING,
+      get_create_style        IMPORTING im_color_code TYPE char4  OPTIONAL
+                                        im_style      TYPE char10 OPTIONAL
+                                        im_header     TYPE flag   DEFAULT abap_false
+                              RETURNING VALUE(rt_style_id) TYPE string,
+
+      map_values              IMPORTING input_color  TYPE char3
+                                        input_style   TYPE char10 OPTIONAL
+                                        im_header    TYPE flag OPTIONAL
+                              RETURNING VALUE(style_value) TYPE ty_style,
+
+      compute_precision       IMPORTING im_value      TYPE string
+                              RETURNING VALUE(rt_value) TYPE string,
+
+      map_color               IMPORTING im_color      TYPE text10
+                              RETURNING VALUE(hex_color) TYPE text10,
+
+      get_color_from_data     IMPORTING fcat_emphasize TYPE text40
+                                        row_fname      TYPE text40
+                                        complex_color  LIKE ty_cell_detail
+                                        complex_styl   LIKE ty_cell_styl
+                                        current_cell   TYPE char50
+                                        data           TYPE any
+                              RETURNING VALUE(rt_color_code) TYPE row_color_code,
+
+      check_same_sheetname    IMPORTING name           TYPE string
+                              RETURNING VALUE(updated_name) TYPE text30,
+
+      set_col_order           IMPORTING fcat           TYPE tt_header
+                                        layout         TYPE ty_layout
+                              RETURNING VALUE(rt_header) TYPE tt_header.
+
+
+ENDCLASS .
+
+CLASS lcl_xlsx IMPLEMENTATION .
+
+  METHOD add_sheet .
+
+    CHECK im_table IS NOT INITIAL.
+
+    REFRESH : li_xls_row , li_column_width.
+
+    "Passing Header------------------------------------------------------------------------------->>
+    CLEAR : ls_xls_row.
+    ls_xls_row-rownr = 1.
+    DATA(lt_header) = set_col_order( EXPORTING fcat = im_header layout = report_layout  ).
+    LOOP AT lt_header INTO DATA(ls_head1).
+
+      "set cell values for header
+      CLEAR ls_xls_cell-cell_content.
+      ls_xls_cell-type = 'String'.
+*      ls_xls_cell-currdec  = '0'.
+      ls_xls_cell-styleid = get_create_style( EXPORTING im_color_code = '999' im_header = abap_true ).
+      ls_xls_cell-cell_content = ls_head1-value  .
+      APPEND ls_xls_cell TO ls_xls_row-cells.
+
+      ls_column_width-col_index = sy-tabix.
+      CONDENSE ls_xls_cell-cell_content.
+      DATA(len) = ( strlen( ls_xls_cell-cell_content ) * '5' ) + 2.
+      ls_column_width-col_width = len.
+      APPEND ls_column_width TO li_column_width.
+      CLEAR ls_column_width.
+
+    ENDLOOP.
+    "append header row to row table
+    APPEND ls_xls_row TO li_xls_row.
+
+
+
+    "Passing Data--------------------------------------------------------------------------------->>
+    LOOP AT im_table ASSIGNING FIELD-SYMBOL(<fs_table>).
+
+      CLEAR : ls_xls_row.
+      ls_xls_row-rownr = sy-tabix + 1 .
+
+      LOOP AT lt_header INTO DATA(ls_head).
+        ASSIGN COMPONENT ls_head-fieldname OF STRUCTURE <fs_table> TO FIELD-SYMBOL(<fs_wa>).
+        IF sy-subrc = 0.
+
+          CLEAR ls_xls_cell-cell_content .
+          ls_xls_cell-type = 'String' .
+
+          ""Below Color Hirearchy To be built - 1.Cell Wise Color 2. Row Wise Color 3. Column Wise Color
+          ""Currently Only Column Wise , Row Wise Taken
+          "Column Color
+
+          DATA(pass_row_color_code) = get_color_from_data( EXPORTING fcat_emphasize = CONV #( ls_head-col_color )
+                                                                     row_fname      = row_color
+                                                                     complex_color  = cell_color
+                                                                     complex_styl   = cell_styl
+                                                                     current_cell   = ls_head-fieldname
+                                                                     data = <fs_table> ) .
+          ls_xls_cell-styleid = get_create_style( EXPORTING im_color_code = pass_row_color_code-rt_code im_style = pass_row_color_code-rt_styl  ).
+
+
+          DATA(lv_type) = cl_abap_typedescr=>describe_by_data( <fs_wa> ).
+          CASE lv_type->type_kind .
+
+            WHEN 'C'.
+              IF <fs_wa> IS NOT INITIAL.
+                ls_xls_cell-type = 'String'.
+                ls_xls_cell-cell_content = |{ <fs_wa> ALPHA = OUT }|.
+              ELSE.
+                ls_xls_cell-type = 'String'.
+                ls_xls_cell-cell_content = ''.
+              ENDIF.
+
+            WHEN 'D'.
+              IF <fs_wa> <> '00000000'.
+                ls_xls_cell-cell_content =  |{ <fs_wa>+0(4) }-{ <fs_wa>+4(2) }-{ <fs_wa>+6(2) }| .
+                ls_xls_cell-type = 'DateTime'.
+                ls_xls_cell-styleid =
+                  get_create_style( EXPORTING
+                    im_color_code = pass_row_color_code-rt_code
+                    im_style      = 'DATE'
+                  ).
+              ENDIF.
+
+            WHEN 'a' OR 'e' OR 'F' OR 'I' OR 'b' OR 'P' .
+            "a- DECFLOAT16    "e- DECFLOAT34    "F-FLOAT    "I-INT    "b -INT1    "8-INT8   "s-INT2     "+:INTF     "N-NUMERIC    "P-PACKED
+
+              ls_xls_cell-type = 'Number' .
+              ls_xls_cell-styleid =
+                get_create_style( EXPORTING
+                  im_color_code = pass_row_color_code-rt_code
+                  im_style      = 'NUMC' && '_' && lv_type->decimals
+                ).
+
+              DATA  :lv_condense TYPE string.
+              CLEAR : lv_condense.
+              lv_condense = <fs_wa>.
+              CONDENSE lv_condense .
+              IF <fs_wa> < 0 .
+                REPLACE ALL OCCURRENCES OF '-' IN lv_condense WITH '' .
+                ls_xls_cell-cell_content = |-{ lv_condense }|.
+
+              ELSE.
+                ls_xls_cell-cell_content = |{ lv_condense }|.
+              ENDIF.
+
+            WHEN OTHERS.
+              IF <fs_wa> IS NOT INITIAL.
+                ls_xls_cell-cell_content = <fs_wa>.
+                ls_xls_cell-type = 'String'.
+              ELSE.
+                ls_xls_cell-cell_content = ''.
+                ls_xls_cell-type = 'String'.
+              ENDIF.
+          ENDCASE.
+          CONDENSE ls_xls_cell-cell_content.
+
+
+          "logic for cell color
+          DATA(lv_comp) = ls_xls_cell-cell_content.
+          TRANSLATE lv_comp TO UPPER CASE.
+          ASSIGN COMPONENT 'CELLCOLOR' OF STRUCTURE <fs_table> TO FIELD-SYMBOL(<fs_color>).
+          IF sy-subrc IS INITIAL.
+
+            LOOP AT <fs_color> ASSIGNING FIELD-SYMBOL(<fs_wa_color>).
+              ASSIGN COMPONENT 'FNAME' OF STRUCTURE <fs_wa_color> TO FIELD-SYMBOL(<fs_name>).
+              IF sy-subrc IS INITIAL.
+                IF <fS_name> EQ CONV char30( lv_comp ).
+                  ASSIGN COMPONENT 2 OF STRUCTURE <fs_wa_color> TO FIELD-SYMBOL(<fs_cii>).
+                   IF sy-subrc IS INITIAL.
+
+                      DATA col TYPE char4.
+                      col = <fs_cii>-('COL') && <fs_cii>-('INT') && <fs_cii>-('INV').
+
+                       ls_xls_cell-styleid = me->get_create_style(
+                         EXPORTING
+                           im_color_code = col
+                       ).
+                   ENDIF.
+                 ENDIF.
+                 ENDIF.
+            ENDLOOP.
+          ENDIF.
+
+          "append cell values to row structure
+          APPEND ls_xls_cell TO ls_xls_row-cells.
+
+          ASSIGN li_column_width[ col_index = sy-tabix ] TO FIELD-SYMBOL(<fs_col_width>).
+          IF sy-subrc IS INITIAL.
+            len = ( strlen( ls_xls_cell-cell_content ) * '5' ) + 2.
+            IF <fs_col_width>-col_width LE len.
+              <fs_col_width>-col_width = len + 5.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+
+      "append row values to row internal table
+      APPEND ls_xls_row TO li_xls_row.
+
+    ENDLOOP.
+
+    APPEND VALUE #( sheetname   = check_same_sheetname( EXPORTING name = im_sheetname  )
+                       sheetx   = li_xls_row
+                       colwidth = li_column_width  )
+    TO it_sheets .
+
+  ENDMETHOD.
+
+  METHOD convertbin.
+
+    CALL TRANSFORMATION zexcel_xml_trans " ztest
+     SOURCE excelmeta = ls_excelmeta
+            sheets = it_sheets
+     RESULT XML  lv_xml_string.
+    "
+
+    CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+      EXPORTING
+        buffer     = lv_xml_string
+      TABLES
+        binary_tab = bin.
+
+  ENDMETHOD.
+
+
+
+  METHOD check_same_sheetname.
+    READ TABLE it_sheets INTO DATA(lt_sheets) WITH KEY sheetname = name .
+    IF sy-subrc = 0 .
+      DATA(lt_local) = VALUE tt_sheet( FOR <fs> IN it_sheets
+                                            WHERE ( sheetname = name )
+                                                  ( CORRESPONDING #( <fs> ) )
+                               ) .
+      DATA(lv_version) = lines( lt_local ) .
+      updated_name =  |{ name }_S{ lv_version }| .
+    ELSE.
+      updated_name = name .
+    ENDIF.
+  ENDMETHOD.
+
+
+  METHOD download_excel.
+
+    me->convertbin(
+      IMPORTING
+        bin = binary_content
+    ).
+
+    DATA : filename TYPE string .
+    IF filename_path IS NOT INITIAL.
+      filename = filename_path.
+    ELSEIF file_name IS NOT INITIAL AND file_path IS NOT INITIAL.
+      filename =  file_path && '\' && file_name .
+    ELSEIF filepath_popup IS NOT INITIAL.
+      DATA: lv_filename TYPE string,
+            lv_path     TYPE string,
+            lv_action   TYPE i.
+      cl_gui_frontend_services=>file_save_dialog( EXPORTING default_file_name = 'Excel'
+                                                              default_extension = 'XLSX'
+                                                     CHANGING filename = lv_filename
+                                                              path = lv_path
+                                                              fullpath = filename
+                                                              user_action = lv_action
+                                                     EXCEPTIONS
+                                                       cntl_error                = 1
+                                                       error_no_gui              = 2
+                                                       not_supported_by_gui      = 3
+                                                       invalid_default_file_name = 4  ) .
+      IF lv_action <> cl_gui_frontend_services=>action_ok.
+        EXIT.
+      ENDIF.
+    ENDIF.
+
+    CONDENSE filename .
+    CHECK filename IS NOT INITIAL.
+    CALL FUNCTION 'GUI_DOWNLOAD'
+      EXPORTING
+        filename                = filename
+        filetype                = 'BIN'
+      TABLES
+        data_tab                = binary_content
+      EXCEPTIONS
+        file_write_error        = 1
+        no_batch                = 2
+        gui_refuse_filetransfer = 3
+        invalid_type            = 4
+        no_authority            = 5
+        unknown_error           = 6
+        header_not_allowed      = 7
+        separator_not_allowed   = 8
+        filesize_not_allowed    = 9
+        header_too_long         = 10
+        dp_error_create         = 11
+        dp_error_send           = 12
+        dp_error_write          = 13
+        unknown_dp_error        = 14
+        access_denied           = 15
+        dp_out_of_memory        = 16
+        disk_full               = 17
+        dp_timeout              = 18
+        file_not_found          = 19
+        dataprovider_exception  = 20
+        control_flush_error     = 21
+        OTHERS                  = 22.
+    CASE sy-subrc .
+      WHEN 1.
+        MESSAGE 'Error Downloading File , File with same name already Open' TYPE 'I' .
+      WHEN 10.
+        MESSAGE 'Header Too Long' TYPE 'I' .
+      WHEN 5 OR 15.
+        MESSAGE 'Unable To Download ,Unable to Write In File  ' TYPE 'I' .
+      WHEN 17.
+        MESSAGE 'Disk Full, Unable to Download ' TYPE  'I' .
+      WHEN OTHERS.
+    ENDCASE.
+    IF open_file = abap_true.
+      CALL METHOD cl_gui_frontend_services=>execute
+        EXPORTING
+          document               = filename
+          maximized              = 'X'
+          operation              = 'OPEN'
+        EXCEPTIONS
+          cntl_error             = 1
+          error_no_gui           = 2
+          bad_parameter          = 3
+          file_not_found         = 4
+          path_not_found         = 5
+          file_extension_unknown = 6
+          error_execute_failed   = 7
+          synchronous_failed     = 8
+          not_supported_by_gui   = 9
+          OTHERS                 = 10.
+    ENDIF.
+
+  ENDMETHOD.
+
+
+  METHOD get_color_from_data .
+
+    rt_color_code = fcat_emphasize .
+    IF row_fname IS NOT INITIAL.
+      ASSIGN COMPONENT row_fname OF STRUCTURE data TO FIELD-SYMBOL(<fs>).
+      IF sy-subrc = 0.
+        IF <fs> IS NOT INITIAL.
+          rt_color_code = <fs> .
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    IF complex_color IS NOT INITIAL.
+      FIELD-SYMBOLS : <fs_coltable> TYPE ANY TABLE .
+      ASSIGN COMPONENT complex_color-fname_col OF STRUCTURE data TO <fs_coltable>.
+      IF sy-subrc = 0.
+        DATA(lv_where) = |{ complex_color-color_col } = '{ current_cell }'|.
+*        ASSIGN <fs_coltable>[ ( lv_key )  ] to FIELD-SYMBOL(<fs_c>) .
+        LOOP AT <fs_coltable> ASSIGNING FIELD-SYMBOL(<fs_compcol>) WHERE (lv_where).
+          ASSIGN COMPONENT |{ complex_color-struct_color_col }-{ complex_color-struct_color_col_col }| OF STRUCTURE <fs_compcol> TO FIELD-SYMBOL(<fs_col>).
+          CHECK sy-subrc = 0.
+          ASSIGN COMPONENT |{ complex_color-struct_color_col }-{ complex_color-struct_color_int_col }| OF STRUCTURE <fs_compcol> TO FIELD-SYMBOL(<fs_int>).
+          CHECK sy-subrc = 0.
+          ASSIGN COMPONENT |{ complex_color-struct_color_col }-{ complex_color-struct_color_inv_col }| OF STRUCTURE <fs_compcol> TO FIELD-SYMBOL(<fs_inv>).
+          CHECK sy-subrc = 0.
+          rt_color_code-rt_code = 'C' && <fs_col> && <fs_int> && <fs_inv> .
+          EXIT.
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+
+    IF complex_styl IS NOT INITIAL.
+      FIELD-SYMBOLS : <fs_styltable> TYPE ANY TABLE .
+      ASSIGN COMPONENT complex_styl-fname_styl OF STRUCTURE data TO <fs_styltable> .
+      IF sy-subrc = 0.
+        DATA(lv_styl_where) = |{ complex_styl-styl_fieldname } = '{ current_cell }'|.
+        LOOP AT <fs_styltable> ASSIGNING FIELD-SYMBOL(<fs_compstyl>) WHERE (lv_styl_where).
+          ASSIGN COMPONENT complex_styl-style_style OF STRUCTURE <fs_compstyl> TO FIELD-SYMBOL(<fs_col1>).
+          CHECK sy-subrc = 0.
+          CASE <fs_col1>.
+            WHEN alv_style_font_bold OR alv_style_font_bold_no.
+              rt_color_code-rt_styl = 'BOLD' .
+            WHEN alv_style_font_italic OR alv_style_font_italic.
+              rt_color_code-rt_styl = 'ITLC' .
+            WHEN alv_style_font_underlined OR alv_style_font_underlined.
+              rt_color_code-rt_styl = 'UNDL' .
+          ENDCASE.
+
+        ENDLOOP.
+      ENDIF.
+    ENDIF.
+
+
+  ENDMETHOD.
+
+
+  METHOD get_create_style.
+    " SOC by Ryan Nayak on 15.01.2025
+    IF im_color_code IS INITIAL AND im_style IS INITIAL.
+      rt_style_id = 'DefaultString'.
+      RETURN.
+    ENDIF.
+
+    DATA(lv_color_code) = im_color_code.
+    IF lv_color_code IS INITIAL.
+      lv_color_code = 'Default'.
+    ENDIF.
+
+    CASE im_header.
+      WHEN abap_true.
+
+        READ TABLE lt_stylmap INTO DATA(ls_map1) WITH KEY salv_color = im_color_code.
+        IF sy-subrc = 0.
+          rt_style_id = ls_map1-style_id.
+        ELSE.
+
+          " Build a new style for the header: '999-'
+          APPEND map_values(
+            input_color = CONV char3( im_color_code )
+            im_header = abap_true
+          ) TO ls_excelmeta-styles REFERENCE INTO DATA(ls_ref1).
+
+          APPEND VALUE #(
+            salv_color = im_color_code
+            style_id   = ls_ref1->id
+          ) TO lt_stylmap.
+
+          rt_style_id = im_color_code.  .
+        ENDIF.
+
+      WHEN abap_false.
+
+        DATA(lv_salv_concat_code) = |{ lv_color_code }-{ im_style }|.
+
+        READ TABLE lt_stylmap INTO DATA(ls_map) WITH KEY salv_color = lv_salv_concat_code.
+        IF sy-subrc = 0.
+          rt_style_id = ls_map-style_id.
+        ELSE.
+          DATA(lv_color_clean) = im_color_code.
+          REPLACE ALL OCCURRENCES OF 'C' IN lv_color_clean WITH ''.
+          CONDENSE lv_color_clean.
+
+          IF lv_color_clean IS INITIAL.
+            APPEND map_values(
+              input_color = 'DEF'
+              input_style = im_style
+            ) TO ls_excelmeta-styles REFERENCE INTO DATA(ls_ref).
+          ELSE.
+            APPEND map_values(
+              input_color = lv_color_clean+0(3)
+              input_style = im_style
+            ) TO ls_excelmeta-styles REFERENCE INTO ls_ref.
+          ENDIF.
+
+          APPEND VALUE #(
+            salv_color = lv_salv_concat_code
+            style_id   = ls_ref->id
+          ) TO lt_stylmap.
+
+          rt_style_id = ls_ref->id.
+        ENDIF.
+    ENDCASE.
+
+  IF rt_style_id IS INITIAL.
+    rt_style_id = 'Default'.
+  ENDIF.
+
+  ENDMETHOD.
+
+  METHOD map_values.
+
+    " SOC by Ryan Nayak on 15.01.2025
+    IF input_style IS INITIAL.
+      style_value-id = input_color.
+*      style_value-number_fmt = '@'.
+      style_value-number-number_fmt = '@'.
+
+    ELSE.
+      style_value-id = |{ input_color }-{ input_style }|.
+
+      DATA(lt_style_tokens) = VALUE string_table( ).
+      SPLIT input_style AT '-' INTO TABLE lt_style_tokens.
+      LOOP AT lt_style_tokens INTO DATA(lv_style_token).
+        TRANSLATE lv_style_token TO UPPER CASE.
+        CASE lv_style_token+0(4).
+          WHEN 'BOLD'.
+            style_value-font-bold = '1'.
+*            style_value-number_fmt = '@'.
+            style_value-number-number_fmt = '@'.
+          WHEN 'ITLC'.
+            style_value-font-italic = '1'.
+*            style_value-number_fmt = '@'.
+            style_value-number-number_fmt = '@'.
+          WHEN 'UNDL'.
+            style_value-font-underline = '1'.
+*            style_value-number_fmt = '@'.
+            style_value-number-number_fmt = '@'.
+            " SOC by Ryan Nayak on 20.01.2025
+          WHEN 'NUMC'.
+*            style_value-number_fmt = '#,##0.0000000'.
+            style_value-number-number_fmt = '#,##0' && compute_precision(
+                                                EXPORTING im_value = lv_style_token
+                                                    ).
+            " EOC
+          WHEN 'DATE'.
+*            style_value-number_fmt = 'dd\-mm\-yyyy'.
+            style_value-number-number_fmt = 'dd\-mm\-yyyy'.
+          WHEN OTHERS.
+        ENDCASE.
+      ENDLOOP.
+    ENDIF.
+
+    IF im_header EQ abap_false.
+      IF input_color <> 'DEF'.
+        DATA(lv_mapped_color) = map_color( im_color = CONV #( input_color ) ).
+        CASE input_color+2(1) .
+          WHEN 1.
+            style_value-font-color = lv_mapped_color.
+          WHEN 0.
+            style_value-interior-patterncolorindex =  lv_mapped_color.
+            style_value-interior-colorindex = lv_mapped_color.
+            style_value-interior-pattern = 'Gray0625' .  "pattern value for completely filled cell
+        ENDCASE.
+      ENDIF.
+      " EOC
+
+    ELSE.
+
+      ""For header
+      style_value-interior-patterncolorindex =  style_value-interior-colorindex = map_color( im_color = CONV #( input_color ) ).
+      style_value-interior-pattern = 'Gray0625' .       "pattern value for completely filled cell
+      style_value-id = input_color.
+      style_value-font-bold = '1' .
+      style_value-border-linestyle-bottom = 'Continuous' .
+      style_value-border-linestyle-left   = 'Continuous' .
+      style_value-border-linestyle-right  = 'Continuous' .
+      style_value-border-linestyle-top    = 'Continuous' .
+      style_value-border-weight = '1'.
+      style_value-border-color-bottom = '#000000'.
+      style_value-border-color-left   = '#000000'.
+      style_value-border-color-right  = '#000000'.
+      style_value-border-color-top    = '#000000'.
+      style_value-alignment-horizontal = 'Center'.
+      style_value-alignment-vertical = 'Center'.
+    ENDIF.
+  ENDMETHOD .
+
+
+  METHOD map_color.
+    hex_color = SWITCH #( im_color
+                                        WHEN '100' THEN '#C5EAEE'                                     "#C5EAEE: Light Cyan / Pale Turquoise
+                                        WHEN '101' THEN '#B9F1F6'                                     "#B9F1F6: Pale Cyan / Very Light Blue
+                                        WHEN '110' THEN '#A6E5F4'                                     "#A6E5F4: Light Sky Blue / Pale Cerulean
+                                        WHEN '111' THEN '#A6E5F4'                                     "#A6E5F4: Light Sky Blue / Pale Cerulean
+
+                                        WHEN '200' THEN '#DFEBF5'                                     "#DFEBF5: Very Light Blue / Alice Blue
+                                        WHEN '201' THEN '#946666'                                     "#946666: Rosy Brown / Dark Puce
+                                        WHEN '210' THEN '#D4DFEF'                                     "#D4DFEF: Light Steel Blue / Periwinkle Grey
+                                        WHEN '211' THEN '#D4DFEF'                                     "#D4DFEF: Light Steel Blue / Periwinkle Grey
+
+                                        WHEN '300' THEN '#FFFDBF'                                     "#FFFDBF: Pale Yellow / Lemon Chiffon
+                                        WHEN '301' THEN '#868557'                                     "#868557: Dark Olive Green / Drab
+                                        WHEN '310' THEN '#FFF843'                                     "#FFF843: Bright Yellow / Lemon
+                                        WHEN '311' THEN '#FFF843'                                     "#FFF843: Bright Yellow / Lemon
+
+                                        WHEN '400' THEN '#CCE3E3'                                     "#CCE3E3: Pale Cyan / Light Greyish Cyan
+                                        WHEN '401' THEN '#233866'                                     "#233866: Dark Midnight Blue / Oxford Blue
+                                        WHEN '410' THEN '#A6E5F4'                                     "#A6E5F4: Light Sky Blue / Pale Cerulean
+                                        WHEN '411' THEN '#D1EFFF'                                     "
+
+                                        WHEN '500' THEN '#C6F9C1'                                     "#C6F9C1: Pale Green / Mint Green
+                                        WHEN '501' THEN '#00642B'                                     "#00642B: Dark Green / Bottle Green
+                                        WHEN '510' THEN '#94D88F'                                     "#94D88F: Medium Aquamarine / Light Emerald Green
+                                        WHEN '511' THEN '#F5FAE5'                                     "
+
+                                        WHEN '600' THEN '#FF988C'                                     "#FF988C: Light Salmon / Coral Pink
+                                        WHEN '601' THEN '#B50004'                                     "#B50004: Dark Red / Firebrick
+                                        WHEN '610' THEN '#FF6758'                                     "#FF6758: Orange-Red / Vivid Tangerine
+                                        WHEN '611' THEN '#FFF0F5'                                     "
+
+                                        WHEN '700' THEN '#F8E5C8'                                     "#F8E5C8: Pale Peach / Navajo White
+                                        WHEN '701' THEN '#D7A130'                                     "#D7A130: Goldenrod / Dark Yellow Ochre
+                                        WHEN '710' THEN '#FDBB71'                                     "#FDBB71: Sandy Brown / Light Orange
+                                        WHEN '711' THEN '#FDBB71'                                     "#FDBB71: Sandy Brown / Light Orange
+
+                                        WHEN '999' THEN '#C4C4C1'  "Header Color Style                "#C4C4C1: Light Grey / Silver Sand
+
+
+                                     ).
+  ENDMETHOD .
+
+  METHOD set_col_order.
+    IF layout IS NOT INITIAL.
+      DATA : rt_dbfieldcat TYPE TABLE OF ltdxdata.
+*      DATA: rs_varkey TYPE ltdx.
+      DATA: BEGIN OF rs_varkey,
+            report    TYPE REPID,
+            handle    TYPE SLIS_HANDL,
+            log_group TYPE SLIS_LOGGR,
+            username  TYPE SLIS_USER,
+            variant   TYPE SLIS_VARI,
+            type      TYPE SLIS_TYPE,
+            END OF rs_varkey.
+
+      IF layout-layout_var IS NOT INITIAL.
+        SELECT SINGLE
+        report
+        handle
+        log_group
+        username
+        variant
+        type
+        FROM ltdx
+        INTO rs_varkey
+        WHERE report = layout-report
+          AND variant = layout-layout_var.
+      ELSE.
+        SELECT SINGLE
+          a~report
+          a~handle
+          a~log_group
+          a~username
+          a~variant
+          a~type
+        FROM ltdx AS a INNER JOIN ltdxd AS b
+         ON a~relid     = b~relid
+        AND a~report    = b~report
+        AND a~handle    = b~handle
+        AND a~log_group = b~log_group
+        AND a~username  = b~username
+        AND a~variant   = b~variant
+        AND a~type      = b~type
+        INTO rs_varkey
+        WHERE a~report = layout-report.
+      ENDIF.
+
+
+
+      IMPORT lt_dbfieldcat TO rt_dbfieldcat
+        FROM  DATABASE ltdx(lt)
+        ID rs_varkey."
+
+      SORT rt_dbfieldcat BY value ASCENDING.
+      LOOP AT rt_dbfieldcat ASSIGNING FIELD-SYMBOL(<fs_colseq>) WHERE param = 'COL_POS'.
+        READ TABLE rt_dbfieldcat ASSIGNING FIELD-SYMBOL(<fs_chk>) WITH KEY key1 = <fs_colseq>-key1 param = 'NO_OUT' value = '' .
+        CHECK sy-subrc = 0 .
+        READ TABLE fcat ASSIGNING FIELD-SYMBOL(<fs_fcat>) WITH KEY fieldname = <fs_colseq>-key1.
+        CHECK sy-subrc = 0 .
+        APPEND VALUE #( fieldname =  <fs_fcat>-fieldname
+                        value     =  <fs_fcat>-value
+                        col_color =  <fs_fcat>-col_color
+                        editmask  =  <fs_fcat>-editmask
+        ) TO rt_header.
+      ENDLOOP.
+    ENDIF.
+    "Triggers when layout is not passed
+    IF rt_header IS INITIAL .
+      rt_header = fcat.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD compute_precision.
+    " Fetch the precision defined for number
+    " Returns concatenated string of zeros based on precision required
+    " if zero, returns nothing - format number as an absolute value
+    DATA : lv_abs_val   TYPE string, lv_precision TYPE string .
+    SPLIT im_value AT '_' INTO lv_abs_val lv_precision.
+    IF lv_precision NE '0'.
+      rt_value = '.'.
+      DO lv_precision TIMES .
+        rt_value = rt_value && '0'.
+      ENDDO.
+    ENDIF.
+  ENDMETHOD.
+
+ENDCLASS.
