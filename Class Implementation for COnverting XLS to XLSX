@@ -1,0 +1,284 @@
+""xls to xlsx
+
+*----------------------------------------------------------------------*
+CLASS zfsborcl_xlsx DEFINITION.
+
+  PUBLIC SECTION.
+
+    CLASS-METHODS zxlsx_download_popup
+      IMPORTING
+        !def_ext TYPE string DEFAULT 'xlsx'
+        !def_name TYPE string OPTIONAL
+        !gt_fcat_data TYPE lvc_t_fcat OPTIONAL
+      CHANGING
+        !gt_format TYPE STANDARD TABLE .
+    CLASS-METHODS zxlsx_with_path
+      IMPORTING
+        !file_name TYPE string
+        !file_path TYPE string
+        !gt_data TYPE STANDARD TABLE
+        !gs_data TYPE any .
+
+ENDCLASS.                    "ZFSBORCL_XLSX DEFINITION
+
+
+*----------------------------------------------------------------------*
+*       CLASS ZFSBORCL_XLSX IMPLEMENTATION
+*----------------------------------------------------------------------*
+*
+*----------------------------------------------------------------------*
+  CLASS zfsborcl_xlsx IMPLEMENTATION.
+
+    METHOD zxlsx_download_popup.
+      DATA: lt_columns            TYPE STANDARD TABLE OF if_fdt_doc_spreadsheet=>s_column,
+              lv_name             TYPE string,
+              lv_action           TYPE i,
+              lv_filename         TYPE string,
+              lv_fullepath        TYPE string,
+              lv_path             TYPE string,
+              ls_columns          TYPE if_fdt_doc_spreadsheet=>s_column,
+*          bin_data            TYPE REF TO cl_fdt_xl_spreadsheet.
+              bin_data            TYPE  xstring,
+              it_raw_data            TYPE  solix_tab.
+      FIELD-SYMBOLS : <fs>      TYPE any ,
+                      <fs_data> TYPE any.
+
+      CHECK NOT gt_format IS INITIAL . "check gt_Data has data
+
+*      CHECK NOT gt_fcat_data IS INITIAL.
+
+
+      READ TABLE gt_format ASSIGNING <fs_data> INDEX 1 .
+      IF sy-subrc = 0.
+*      CHECK NOT gt_data is INITIAL . "check gt_Data has data
+
+*      IF gt_format is INITIAL.
+*        INSERT INITIAL LINE INTO GT_FORMAT INDEX 1.
+*      ENDIF.
+
+*      DATA(o_desc) = CAST cl_abap_structdescr( cl_abap_structdescr=>describe_by_data( <fs_data> ) ).
+        DATA : o_desc TYPE REF TO cl_abap_structdescr ,
+               fcat_desc TYPE REF TO cl_abap_datadescr ,
+               lr_data     TYPE REF TO data,
+               lt_format   TYPE REF TO data,
+               ls_data     TYPE STANDARD TABLE OF abap_componentdescr       .
+
+        FIELD-SYMBOLS: <fs_comp> TYPE abap_componentdescr .
+
+        CREATE DATA lr_data LIKE LINE OF gt_format.
+
+        FIELD-SYMBOLS <fs_fcat> TYPE lvc_s_fcat.
+
+        FIELD-SYMBOLS <fs_comp2> TYPE any.
+
+
+        IF gt_fcat_data IS NOT INITIAL.
+
+          LOOP AT gt_fcat_data ASSIGNING <fs_fcat>.
+
+            ls_columns-id = sy-tabix.
+            ls_columns-name = <fs_fcat>-fieldname.
+            ls_columns-display_name = <fs_fcat>-fieldname ."lv_name.
+            ls_columns-is_result = abap_true.
+
+            ASSIGN COMPONENT <fs_fcat>-fieldname OF STRUCTURE <fs_data> TO <fs_comp2>.
+            fcat_desc ?= cl_abap_datadescr=>describe_by_data( <fs_comp2> ).
+            ls_columns-type = fcat_desc.
+            APPEND ls_columns TO lt_columns.
+            CLEAR ls_columns.
+
+          ENDLOOP.
+
+        ELSE.
+          o_desc ?= cl_abap_structdescr=>describe_by_data_ref( lr_data ).
+          ls_data = o_desc->get_components( ).
+
+*        CALL METHOD o_desc->get_components
+*          RECEIVING
+*            p_result = ls_data.
+
+          LOOP AT ls_data ASSIGNING <fs_comp>.
+
+            ASSIGN COMPONENT sy-tabix OF STRUCTURE <fs_data> TO <fs> .
+            IF sy-subrc = 0.
+              lv_name = <fs> .
+              IF <fs_comp>-name IS NOT INITIAL.
+*          APPEND value #( ID       = sy-tabix
+*                     NAME          = <fs_comp>-name
+*                     display_name  = lv_name
+*                     is_result     = abap_true
+*                     type          = <fs_comp>-type ) TO lt_columns .
+
+                ls_columns-id = sy-tabix.
+                ls_columns-name = <fs_comp>-name.
+                ls_columns-display_name = <fs_comp>-name ."lv_name.
+                ls_columns-is_result = abap_true.
+                ls_columns-type = <fs_comp>-type.
+                APPEND ls_columns TO lt_columns.
+                CLEAR ls_columns.
+
+              ENDIF.
+            ENDIF.
+
+
+            CLEAR : lv_name .
+          ENDLOOP.
+
+        ENDIF.
+*    DELETE gt_format INDEX 1 .
+*    CREATE DATA lt_format LIKE LINE OF gt_format.
+        CREATE DATA lt_format LIKE gt_format.
+        FIELD-SYMBOLS : <fs_format> TYPE ANY TABLE .
+        ASSIGN lt_format->* TO <fs_format>.
+        IF sy-subrc = 0.
+          <fs_format> = gt_format.
+          UNASSIGN <fs_format> .
+        ENDIF.
+        bin_data = cl_fdt_xl_spreadsheet=>if_fdt_doc_spreadsheet~create_document( " NAME
+                                                                                         columns = lt_columns
+                                                                                         itab = lt_format
+*                                                                                       COLUMNS_AUX
+*                                                                                       ITAB_AUX_COL_DESC
+                                                                                         iv_call_type = if_fdt_doc_spreadsheet=>gc_call_dec_table ) .
+        IF xstrlen( bin_data ) > 0 .
+          cl_gui_frontend_services=>file_save_dialog( EXPORTING default_file_name = def_name
+                                                                default_extension = def_ext
+                                                       CHANGING filename = lv_filename
+                                                                path = lv_path
+                                                                fullpath = lv_fullepath
+                                                                user_action = lv_action ) .
+
+          IF lv_action = cl_gui_frontend_services=>action_ok.
+
+            CALL METHOD cl_bcs_convert=>xstring_to_solix
+              EXPORTING
+                iv_xstring = bin_data
+              RECEIVING
+                et_solix   = it_raw_data.
+
+
+*        it_raw_data = cl_bcs_convert=>xstring_to_solix( exporting iv_xstring = bin_data ) .
+
+            cl_gui_frontend_services=>gui_download( EXPORTING filename = lv_fullepath
+                                                          filetype = 'BIN'
+                                                          bin_filesize = xstrlen( bin_data )
+                                                          CHANGING
+                                                            data_tab = it_raw_data ).
+          ENDIF.
+        ENDIF.
+      ENDIF.
+
+    ENDMETHOD.                    "zxlsx_download_popup
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Static Public Method ZFSBORCL_XLSX=>ZXLSX_WITH_PATH
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] FILE_NAME                      TYPE        STRING
+* | [--->] FILE_PATH                      TYPE        STRING
+* | [--->] GT_DATA                        TYPE        STANDARD TABLE
+* | [--->] GS_DATA                        TYPE        ANY
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+    METHOD zxlsx_with_path.
+      DATA: lt_columns     TYPE STANDARD TABLE OF if_fdt_doc_spreadsheet=>s_column,
+              lv_name      TYPE string,
+              lv_action    TYPE i,
+              lv_filename  TYPE string,
+              lv_fullepath TYPE string,
+              lv_path      TYPE string,
+              ls_columns   TYPE if_fdt_doc_spreadsheet=>s_column,
+              bin_data     TYPE  xstring,
+              it_raw_data  TYPE  solix_tab..
+      FIELD-SYMBOLS : <fs> TYPE any,
+                      <fs_data> TYPE any,
+                      <fs_comp> TYPE abap_componentdescr.
+
+*    DATA(o_desc) = CAST cl_abap_structdescr( cl_abap_structdescr=>describe_by_data( gs_data ) ).
+
+      DATA : o_desc TYPE REF TO cl_abap_structdescr ,
+         lr_data     TYPE REF TO data,
+         lt_format   TYPE REF TO data,
+         ls_data     TYPE STANDARD TABLE OF abap_componentdescr       .
+
+      CHECK NOT gt_data IS INITIAL . "check gt_Data has data
+      READ TABLE gt_data ASSIGNING <fs_data> INDEX 1 .
+      IF sy-subrc = 0.
+
+
+        CREATE DATA lr_data LIKE LINE OF gt_data.
+*    DATA(o_desc) = CAST cl_abap_structdescr( cl_abap_structdescr=>describe_by_data( <fs_data> ) ).
+        o_desc ?= cl_abap_structdescr=>describe_by_data_ref( lr_data ).
+
+
+        CALL METHOD o_desc->get_components
+          RECEIVING
+            p_result = ls_data.
+
+        LOOP AT ls_data ASSIGNING <fs_comp>.
+
+          ASSIGN COMPONENT sy-tabix OF STRUCTURE gs_data TO <fs> .
+          IF sy-subrc = 0.
+            lv_name = <fs> .
+            IF lv_name IS NOT INITIAL.
+
+*      APPEND value #( ID            = sy-tabix
+*                      NAME          = <fs_comp>-name
+*                      display_name  = lv_name
+*                      is_result     = abap_true
+*                      type          = <fs_comp>-type ) TO lt_columns .
+              ls_columns-id = sy-tabix.
+              ls_columns-name = <fs_comp>-name.
+              ls_columns-display_name = lv_name.
+              ls_columns-is_result = abap_true.
+              ls_columns-type = <fs_comp>-type.
+              APPEND ls_columns TO lt_columns.
+              CLEAR ls_columns.
+            ENDIF.
+          ENDIF.
+          CLEAR : lv_name .
+        ENDLOOP.
+*    CREATE DATA lt_format LIKE LINE OF gt_data.
+        CREATE DATA lt_format LIKE gt_data.
+        bin_data = cl_fdt_xl_spreadsheet=>if_fdt_doc_spreadsheet~create_document( " NAME
+                                                                                            columns = lt_columns
+                                                                                            itab = lt_format
+*                                                                                       COLUMNS_AUX
+*                                                                                       ITAB_AUX_COL_DESC
+                                                                                            iv_call_type = if_fdt_doc_spreadsheet=>gc_call_dec_table ) .
+        IF xstrlen( bin_data ) > 0 .
+          DATA : directory_exist TYPE abap_bool .
+          CALL METHOD cl_gui_frontend_services=>directory_exist
+            EXPORTING
+              directory = file_path
+            RECEIVING
+              result    = directory_exist
+*          EXCEPTIONS
+*         cntl_error           = 1
+*         error_no_gui         = 2
+*         wrong_parameter      = 3
+*         not_supported_by_gui = 4
+*         others    = 5
+            .
+
+          IF directory_exist = abap_true .
+            CALL METHOD cl_bcs_convert=>xstring_to_solix
+              EXPORTING
+                iv_xstring = bin_data
+              RECEIVING
+                et_solix   = it_raw_data.
+
+*        it_raw_data = cl_bcs_convert=>xstring_to_solix( exporting iv_xstring = bin_data ) .
+            lv_fullepath = file_path && file_name && '.xlsx' .
+            cl_gui_frontend_services=>gui_download( EXPORTING filename = lv_fullepath
+                                                          filetype = 'BIN'
+                                                          bin_filesize = xstrlen( bin_data )
+                                                          CHANGING
+                                                            data_tab = it_raw_data ).
+
+          ENDIF.
+
+
+        ENDIF.
+      ENDIF.
+    ENDMETHOD.                    "zxlsx_with_path
+  ENDCLASS.                    "ZFSBORCL_XLSX IMPLEMENTATION
